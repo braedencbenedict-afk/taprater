@@ -450,7 +450,7 @@
   </main>
 
   <footer style="text-align:center;padding:12px;font-size:0.72rem;color:var(--muted);">
-    TapRater 2026-02-23-4
+    TapRater 2026-02-23-5
   </footer>
 </div>
 
@@ -530,12 +530,15 @@
     return reconstructColumnText(data);
   }
 
-  // Detect whether the OCR'd page has two columns and, if so, re-order the
-  // text so the left column is read fully top-to-bottom before the right.
+  // Reconstruct multi-column menu text so each column reads top-to-bottom.
   //
-  // We work at the WORD level (individual bounding boxes) rather than lines,
-  // because Tesseract merges both columns into one "line" when they share the
-  // same y-position — making data.lines useless for two-column menus.
+  // Works at the WORD level (individual bounding boxes) because Tesseract
+  // merges multi-column content into garbled single "lines" when two columns
+  // share the same y-position.
+  //
+  // Column boundaries are found by looking for horizontal bands where no
+  // word centres appear — i.e. the white-space gaps between printed columns.
+  // This approach automatically handles 1, 2, 3, or 4-column layouts.
   function reconstructColumnText(data) {
     const words = (data.words || [])
       .map(w => ({ text: w.text.trim(), bbox: w.bbox }))
@@ -546,24 +549,64 @@
     const pageWidth = Math.max(...words.map(w => w.bbox.x1));
     if (pageWidth < 10) return data.text;
 
-    // Use the horizontal midpoint as the column split.
-    // Words whose center x is left of mid → left column; right of mid → right column.
-    const mid = pageWidth * 0.5;
-    const leftWords  = words.filter(w => (w.bbox.x0 + w.bbox.x1) / 2 <  mid);
-    const rightWords = words.filter(w => (w.bbox.x0 + w.bbox.x1) / 2 >= mid);
-
-    // Only treat as two-column if the right side has substantial content.
-    if (rightWords.length < words.length * 0.15) {
-      return data.text;
+    // Build a histogram of word x-centre positions (binned at ~5 px).
+    const binSize = Math.max(5, Math.floor(pageWidth / 200));
+    const numBins = Math.ceil(pageWidth / binSize);
+    const hist = new Array(numBins).fill(0);
+    for (const w of words) {
+      const cx = (w.bbox.x0 + w.bbox.x1) / 2;
+      hist[Math.min(Math.floor(cx / binSize), numBins - 1)]++;
     }
 
-    // Group words into lines using vertical proximity.
-    // Two words are on the same line if their y0 values are within half an
-    // average word-height of each other.
+    // Find contiguous runs of empty bins wide enough to be inter-column gaps.
+    // Require at least 6 % of the page width to avoid splitting on small gaps.
+    const minGapBins = Math.max(2, Math.ceil(pageWidth * 0.06 / binSize));
+    const boundaries = []; // x-pixel positions that separate adjacent columns
+
+    let gapStart = -1;
+    for (let i = 0; i <= numBins; i++) {
+      const empty = i === numBins || hist[i] === 0;
+      if (empty) {
+        if (gapStart < 0) gapStart = i;
+      } else {
+        if (gapStart >= 0) {
+          if (i - gapStart >= minGapBins) {
+            // Place the boundary at the mid-point of the gap
+            boundaries.push(Math.round((gapStart + i) / 2) * binSize);
+          }
+          gapStart = -1;
+        }
+      }
+    }
+
+    // No gaps wide enough → single-column menu → use Tesseract's output as-is
+    if (boundaries.length === 0) return data.text;
+
+    // Assign each word to a column by comparing its x-centre to the boundaries.
+    // Column c occupies x ∈ [boundaries[c-1], boundaries[c]) with -∞ / +∞ at edges.
+    const numCols = boundaries.length + 1;
+    const columns = Array.from({ length: numCols }, () => []);
+    for (const w of words) {
+      const cx = (w.bbox.x0 + w.bbox.x1) / 2;
+      let col = boundaries.findIndex(b => cx < b);
+      if (col < 0) col = numCols - 1;
+      columns[col].push(w);
+    }
+
+    // Drop columns with negligible word count — these are false-positive gaps
+    // caused by narrow margins or decorative whitespace.
+    const minColWords = Math.max(3, Math.ceil(words.length * 0.04));
+    const validCols = columns.filter(col => col.length >= minColWords);
+
+    // If only one real column survived, fall back to the raw Tesseract output
+    if (validCols.length < 2) return data.text;
+
+    // Group each column's words into visual lines by vertical proximity.
     const avgH = words.reduce((s, w) => s + (w.bbox.y1 - w.bbox.y0), 0) / words.length;
     const tolerance = avgH * 0.6;
 
     function groupIntoLines(ws) {
+      if (!ws.length) return [];
       const sorted = [...ws].sort((a, b) => a.bbox.y0 - b.bbox.y0);
       const lines = [];
       let group = [sorted[0]];
@@ -579,13 +622,10 @@
       }
       group.sort((a, b) => a.bbox.x0 - b.bbox.x0);
       lines.push({ y: group[0].bbox.y0, text: group.map(w => w.text).join(' ') });
-      return lines.sort((a, b) => a.y - b.y);
+      return lines;
     }
 
-    const leftLines  = groupIntoLines(leftWords);
-    const rightLines = groupIntoLines(rightWords);
-
-    return [...leftLines, ...rightLines].map(l => l.text).join('\n');
+    return validCols.flatMap(col => groupIntoLines(col)).map(l => l.text).join('\n');
   }
 
   // ── OCR text cleanup ──────────────────────────────────────────────────────
@@ -596,27 +636,56 @@
     return raw
       .split('\n')
       .map(l => l.trim())
+
+      // ── Transform phase ────────────────────────────────────────────────────
+      // Normalize lines before filtering so we extract beer names even when
+      // they're mixed with prices, ABV%, or decorative markers on the same line.
+      .map(l => {
+        // Strip leading decorative markers used as bullets: ★ • ► — etc.
+        // (Asterisk * is intentionally kept here; caught by the filter below.)
+        l = l.replace(/^[★✦✶✴•◆▸▶►–—]+\s*/, '').trim();
+
+        // Strip "NEW!" / "NEW " prefix indicators
+        l = l.replace(/^NEW[!]?\s+/i, '').trim();
+
+        // Pipe-separated lines: keep only the text before the first pipe.
+        // Handles "Beer Name | ABV: 6.5%" → "Beer Name"
+        // Size/price specs like "5 oz. $3 | 16 oz. $6.5" → "5 oz. $3"
+        // (still caught by oz/$ filters below)
+        if (l.includes('|')) {
+          l = l.split('|')[0].trim();
+        }
+
+        // Strip inline ABV/IBU labels (with or without a trailing %)
+        // "Zwickel ABV: 5.2% IBU: 28" → "Zwickel"
+        l = l.replace(/\s+(?:ABV|IBU)\s*:?\s*[\d.]+\s*%?/gi, '').trim();
+
+        // Strip a bare trailing percentage: "Two Hearted 7%" → "Two Hearted"
+        l = l.replace(/\s+\d+\.?\d*\s*%\s*$/, '').trim();
+
+        return l;
+      })
+
+      // ── Filter phase ───────────────────────────────────────────────────────
       .filter(l => {
         if (l.length < 3)   return false;  // too short to be a beer name
         if (l.length > 55)  return false;  // probably a description sentence
 
-        if (/\|/.test(l))             return false;  // size | price spec lines
-        if (/^\*/.test(l))            return false;  // *flavour description lines
-        if (/;/.test(l))              return false;  // semicolons = description prose
-        if (/\$[\d.]/.test(l))       return false;  // price ($8.00)
-        if (/%/.test(l))              return false;  // ABV% — universal across all menus
-        if (/\b(ABV|IBU)\b/i.test(l)) return false; // explicit brewing stat labels
-        if (/\b(oz|ounce|pint|glass|pitcher|flight|growler)\b/i.test(l)) return false; // serving sizes
-        if (/,\s*[A-Z]{2}$/.test(l)) return false;  // location lines (St. Louis, MO)
-        if (/^\d[\d\s.,\-]*$/.test(l)) return false; // purely numeric
-        if (/^[\W_]+$/.test(l))       return false;  // no letters at all
-        if (/^(tap list|beer menu|our beers|on tap|draft list|beverages|drinks menu|guest tap|year.round offerings|limited releases?)$/i.test(l)) return false; // section headers
+        if (/\|/.test(l))              return false;  // remaining pipe = noise
+        if (/^\*/.test(l))             return false;  // *flavour description lines
+        if (/;/.test(l))               return false;  // semicolons = description prose
+        if (/\$[\d.]/.test(l))        return false;  // price ($8.00)
+        if (/%/.test(l))               return false;  // remaining ABV%
+        if (/\b(ABV|IBU)\b/i.test(l))  return false;  // remaining stat labels
+        if (/\b(oz|ounce|pint|glass|pitcher|flight|growler)\b/i.test(l)) return false;
+        if (/,\s*[A-Z]{2}$/.test(l))  return false;  // "St. Louis, MO"
+        if (/^\d[\d\s.,\-]*$/.test(l)) return false;  // purely numeric
+        if (/^[\W_]+$/.test(l))        return false;  // no letters at all
+        if (/^(tap list|beer menu|our beers|on tap|draft list|beverages|drinks menu|guest tap|year.round offerings|limited releases?)$/i.test(l)) return false;
 
-        // Deduplicate (case-insensitive)
         const key = l.toLowerCase();
         if (seen.has(key)) return false;
         seen.add(key);
-
         return true;
       })
       .join('\n');
