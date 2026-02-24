@@ -598,7 +598,7 @@
           markNotFound(card);
         }
       } catch (err) {
-        markError(card, name, err.message);
+        markError(card);
       }
     }));
 
@@ -729,12 +729,9 @@
     card.remove();
   }
 
-  function markError(card, query, msg) {
-    card.classList.remove('loading');
-    card.classList.add('not-found');
-    card.innerHTML = `
-      <div class="card-query">${escHtml(query)}</div>
-      <div style="color:#c0392b;font-size:0.85rem;margin-top:4px;">Error: ${escHtml(msg)}</div>`;
+  function markError(card) {
+    // Silently remove — errors are almost always OCR noise that didn't match anything.
+    card.remove();
   }
 
   // ── Rating helpers ────────────────────────────────────────────────────────

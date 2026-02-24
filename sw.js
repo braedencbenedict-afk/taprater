@@ -1,5 +1,5 @@
 // TapRater Service Worker — enables offline shell and "Add to Home Screen"
-const CACHE = 'taprater-v3';
+const CACHE = 'taprater-v4';
 const SHELL = ['./', './index.html', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {
