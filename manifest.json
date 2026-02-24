@@ -1,0 +1,17 @@
+{
+  "name": "TapRater",
+  "short_name": "TapRater",
+  "description": "Scan a brewery menu and see Untappd ratings instantly.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#120800",
+  "theme_color": "#f4a938",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

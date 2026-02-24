@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#f4a938" />
+  <meta name="description" content="Scan a brewery menu and see Untappd ratings instantly." />
+  <title>TapRater</title>
+  <link rel="manifest" href="manifest.json" />
+
+  <style>
+    /* ── Reset & base ────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #120800;
+      --surface:  #1e1000;
+      --card:     #2a1800;
+      --border:   #3d2500;
+      --gold:     #f4a938;
+      --gold-dim: #a06f1a;
+      --text:     #f5e6d0;
+      --muted:    #9a7a5a;
+      --green:    #5cb85c;
+      --orange:   #e8882a;
+      --red:      #c0392b;
+      --radius:   12px;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 16px;
+      line-height: 1.5;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────── */
+    #app {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      max-width: 600px;
+      margin: 0 auto;
+    }
+
+    header {
+      padding: 20px 20px 12px;
+      text-align: center;
+      border-bottom: 1px solid var(--border);
+    }
+
+    header h1 {
+      font-size: 1.6rem;
+      color: var(--gold);
+      letter-spacing: 0.05em;
+    }
+
+    header p {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    main {
+      flex: 1;
+      padding: 24px 16px;
+    }
+
+    /* ── Steps ───────────────────────────────────────────────── */
+    .step { display: none; }
+    .step.active { display: block; }
+
+    .step-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--gold);
+      margin-bottom: 8px;
+    }
+
+    .step-sub {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 20px;
+    }
+
+    /* ── Buttons ─────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 14px 24px;
+      border: none;
+      border-radius: var(--radius);
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+      text-decoration: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .btn:active { transform: scale(0.97); opacity: 0.85; }
+
+    .btn-primary { background: var(--gold); color: #120800; width: 100%; margin-bottom: 12px; }
+    .btn-secondary { background: var(--card); color: var(--text); border: 1px solid var(--border); width: 100%; margin-bottom: 12px; }
+    .btn-ghost { background: transparent; color: var(--muted); font-size: 0.85rem; padding: 8px 0; }
+    .btn-sm { padding: 8px 16px; font-size: 0.85rem; width: auto; margin-bottom: 0; }
+
+    /* ── Capture step ────────────────────────────────────────── */
+    .capture-icon {
+      font-size: 5rem;
+      text-align: center;
+      margin: 20px 0 32px;
+      line-height: 1;
+    }
+
+    /* Hidden real inputs */
+    #camera-input, #file-input { display: none; }
+
+    /* ── Image preview ───────────────────────────────────────── */
+    #preview-container {
+      margin-bottom: 20px;
+      border-radius: var(--radius);
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    #preview { width: 100%; display: block; max-height: 300px; object-fit: contain; background: #000; }
+
+    /* ── OCR progress ────────────────────────────────────────── */
+    .ocr-wrap { text-align: center; padding: 20px 0; }
+    .ocr-icon { font-size: 3rem; margin-bottom: 16px; }
+
+    progress {
+      width: 100%;
+      height: 8px;
+      border-radius: 4px;
+      overflow: hidden;
+      appearance: none;
+      background: var(--border);
+      margin-bottom: 10px;
+    }
+    progress::-webkit-progress-bar { background: var(--border); }
+    progress::-webkit-progress-value { background: var(--gold); transition: width 0.2s; }
+
+    #ocr-status { font-size: 0.85rem; color: var(--muted); }
+
+    /* ── Beer list editor ────────────────────────────────────── */
+    .editor-hint {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-bottom: 14px;
+      line-height: 1.6;
+    }
+    .editor-hint strong { color: var(--text); }
+
+    textarea {
+      width: 100%;
+      min-height: 200px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-size: 0.95rem;
+      line-height: 1.7;
+      padding: 12px 14px;
+      resize: vertical;
+      margin-bottom: 16px;
+      font-family: inherit;
+    }
+    textarea:focus { outline: none; border-color: var(--gold-dim); }
+
+    /* ── Results ─────────────────────────────────────────────── */
+    #results { display: flex; flex-direction: column; gap: 12px; }
+
+    .beer-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .beer-card.loading { opacity: 0.6; }
+    .beer-card.not-found { border-color: #444; opacity: 0.7; }
+
+    .card-query {
+      font-size: 0.72rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 2px;
+    }
+
+    .card-name {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .card-brewery {
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    .card-style {
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+    .card-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 8px;
+    }
+
+    .rating-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 1.3rem;
+      font-weight: 800;
+    }
+
+    .rating-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .rating-great  { color: #5cb85c; }
+    .rating-good   { color: #8fbe5c; }
+    .rating-avg    { color: #e8882a; }
+    .rating-low    { color: #c0392b; }
+    .rating-none   { color: var(--muted); font-size: 0.85rem; font-weight: 400; }
+
+    .dot-great  { background: #5cb85c; }
+    .dot-good   { background: #8fbe5c; }
+    .dot-avg    { background: #e8882a; }
+    .dot-low    { background: #c0392b; }
+
+    .card-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 6px 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      color: var(--gold);
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-decoration: none;
+    }
+
+    .spinner {
+      width: 18px;
+      height: 18px;
+      border: 2px solid var(--border);
+      border-top-color: var(--gold);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      display: inline-block;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .results-actions {
+      margin-top: 20px;
+      display: flex;
+      gap: 10px;
+    }
+
+    /* ── Util ────────────────────────────────────────────────── */
+    .hidden { display: none !important; }
+
+    .config-note {
+      background: #2a1000;
+      border: 1px solid #7a3300;
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      font-size: 0.82rem;
+      color: #e07030;
+      margin-bottom: 20px;
+      line-height: 1.6;
+    }
+    .config-note code {
+      background: #3d2000;
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <header>
+    <h1>🍺 TapRater</h1>
+    <p>Scan a menu · See Untappd ratings</p>
+  </header>
+
+  <main>
+
+    <!-- ── Step 1: Capture ─────────────────────────────────── -->
+    <div id="step-capture" class="step active">
+
+      <div id="worker-warning" class="config-note hidden">
+        ⚠️ Worker URL not set. Open <code>index.html</code> and replace
+        <code>YOUR_WORKER_URL</code> with your Cloudflare Worker URL before using.
+      </div>
+
+      <p class="step-title">Scan a beer menu</p>
+      <p class="step-sub">Take a photo or upload an image of the menu.</p>
+
+      <div class="capture-icon">📷</div>
+
+      <input type="file" id="camera-input" accept="image/*" capture="environment" />
+      <input type="file" id="file-input" accept="image/*" />
+
+      <button class="btn btn-primary" onclick="document.getElementById('camera-input').click()">
+        📸 Take Photo
+      </button>
+      <button class="btn btn-secondary" onclick="document.getElementById('file-input').click()">
+        🖼️ Upload Image
+      </button>
+    </div>
+
+    <!-- ── Step 2: OCR progress ────────────────────────────── -->
+    <div id="step-ocr" class="step">
+      <div class="ocr-wrap">
+        <div class="ocr-icon">🔍</div>
+        <p class="step-title">Reading the menu…</p>
+        <p class="step-sub" style="margin-bottom:24px;">
+          First run downloads the OCR engine (~10 MB). Hang tight!
+        </p>
+        <progress id="ocr-progress" value="0" max="100"></progress>
+        <p id="ocr-status">Starting…</p>
+      </div>
+
+      <div id="preview-container" class="hidden">
+        <img id="preview" alt="Menu preview" />
+      </div>
+    </div>
+
+    <!-- ── Step 3: Edit beer list ──────────────────────────── -->
+    <div id="step-edit" class="step">
+      <p class="step-title">Edit the beer list</p>
+
+      <div class="editor-hint">
+        The OCR pulled all text from the menu. <strong>Edit it down to just the beer names</strong> —
+        one per line. Delete descriptions, prices, ABV%, etc. Then tap Search.
+      </div>
+
+      <textarea id="beer-list" placeholder="One beer name per line&#10;&#10;Example:&#10;Two Hearted Ale&#10;Founders All Day IPA&#10;Bells Oberon"></textarea>
+
+      <button class="btn btn-primary" onclick="searchBeers()">
+        🔎 Search Untappd
+      </button>
+      <button class="btn btn-ghost" onclick="goTo('capture')">
+        ← Scan a different menu
+      </button>
+    </div>
+
+    <!-- ── Step 4: Results ─────────────────────────────────── -->
+    <div id="step-results" class="step">
+      <p class="step-title">Ratings</p>
+      <p class="step-sub" id="results-sub">Searching…</p>
+
+      <div id="results"></div>
+
+      <div class="results-actions">
+        <button class="btn btn-secondary btn-sm" onclick="goTo('edit')">← Edit list</button>
+        <button class="btn btn-secondary btn-sm" onclick="goTo('capture')">📷 New menu</button>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- Tesseract.js OCR — runs entirely in the browser, no server needed -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
+
+<script>
+  // ─────────────────────────────────────────────────────────────────────────
+  // CONFIG — Replace this URL after deploying your Cloudflare Worker
+  // ─────────────────────────────────────────────────────────────────────────
+  const WORKER_URL = 'broad-disk-ef19.braeden-c-benedict.workers.dev';
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+
+  window.addEventListener('DOMContentLoaded', () => {
+    if (WORKER_URL === 'YOUR_WORKER_URL') {
+      document.getElementById('worker-warning').classList.remove('hidden');
+    }
+    registerServiceWorker();
+  });
+
+  // File inputs
+  document.getElementById('camera-input').addEventListener('change', e => handleFile(e.target.files[0]));
+  document.getElementById('file-input').addEventListener('change',  e => handleFile(e.target.files[0]));
+
+  // ── Step navigation ───────────────────────────────────────────────────────
+
+  function goTo(stepName) {
+    document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
+    document.getElementById('step-' + stepName).classList.add('active');
+    window.scrollTo(0, 0);
+  }
+
+  // ── Image capture & OCR ───────────────────────────────────────────────────
+
+  async function handleFile(file) {
+    if (!file) return;
+
+    // Show preview
+    const preview = document.getElementById('preview');
+    preview.src = URL.createObjectURL(file);
+    document.getElementById('preview-container').classList.remove('hidden');
+
+    goTo('ocr');
+
+    try {
+      const text = await runOCR(file);
+      document.getElementById('beer-list').value = text.trim();
+      goTo('edit');
+    } catch (err) {
+      alert('OCR failed: ' + err.message + '\n\nYou can type beer names manually instead.');
+      document.getElementById('beer-list').value = '';
+      goTo('edit');
+    }
+  }
+
+  async function runOCR(file) {
+    const progressEl = document.getElementById('ocr-progress');
+    const statusEl   = document.getElementById('ocr-status');
+
+    const { data: { text } } = await Tesseract.recognize(file, 'eng', {
+      logger(m) {
+        if (m.status === 'recognizing text') {
+          const pct = Math.round(m.progress * 100);
+          progressEl.value = pct;
+          statusEl.textContent = `Reading… ${pct}%`;
+        } else if (m.status === 'loading tesseract core') {
+          statusEl.textContent = 'Loading OCR engine…';
+        } else if (m.status === 'initializing tesseract') {
+          statusEl.textContent = 'Initializing…';
+        } else if (m.status === 'loading language traineddata') {
+          statusEl.textContent = 'Downloading language data… (first run only)';
+        }
+      },
+    });
+
+    return text;
+  }
+
+  // ── Untappd search ────────────────────────────────────────────────────────
+
+  async function searchBeers() {
+    const raw = document.getElementById('beer-list').value;
+    const names = raw
+      .split('\n')
+      .map(l => l.trim())
+      .filter(l => l.length > 1);
+
+    if (names.length === 0) {
+      alert('Please enter at least one beer name, one per line.');
+      return;
+    }
+
+    goTo('results');
+
+    const sub = document.getElementById('results-sub');
+    sub.textContent = `Searching for ${names.length} beer${names.length > 1 ? 's' : ''}…`;
+
+    const container = document.getElementById('results');
+    container.innerHTML = '';
+
+    // Create a loading card for each beer up-front so results appear in order
+    const cards = names.map(name => {
+      const card = createLoadingCard(name);
+      container.appendChild(card);
+      return { name, card };
+    });
+
+    let found = 0;
+
+    // Fetch all in parallel
+    await Promise.all(cards.map(async ({ name, card }) => {
+      try {
+        const result = await fetchBeer(name);
+        if (result) {
+          found++;
+          fillCard(card, result);
+        } else {
+          markNotFound(card, name);
+        }
+      } catch (err) {
+        markError(card, name, err.message);
+      }
+    }));
+
+    sub.textContent = `Found ${found} of ${names.length} beers on Untappd.`;
+  }
+
+  async function fetchBeer(query) {
+    const url = `${WORKER_URL}?q=${encodeURIComponent(query)}`;
+    const resp = await fetch(url);
+
+    if (!resp.ok) throw new Error(`Worker returned ${resp.status}`);
+
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+
+    return data.results?.[0] ?? null;  // Return best match (first result)
+  }
+
+  // ── Card builders ─────────────────────────────────────────────────────────
+
+  function createLoadingCard(query) {
+    const card = document.createElement('div');
+    card.className = 'beer-card loading';
+    card.innerHTML = `
+      <div class="card-query">${escHtml(query)}</div>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:4px;">
+        <span class="spinner"></span>
+        <span style="color:var(--muted);font-size:0.9rem;">Searching…</span>
+      </div>`;
+    return card;
+  }
+
+  function fillCard(card, beer) {
+    card.classList.remove('loading');
+
+    const { cls, dotCls, label } = ratingStyle(beer.rating);
+
+    const ratingHtml = beer.rating != null
+      ? `<div class="rating-badge ${cls}">
+           <div class="rating-dot ${dotCls}"></div>
+           ${beer.rating.toFixed(2)}
+         </div>`
+      : `<span class="rating-none">No rating yet</span>`;
+
+    card.innerHTML = `
+      <div class="card-name">${escHtml(beer.name)}</div>
+      ${beer.brewery ? `<div class="card-brewery">${escHtml(beer.brewery)}</div>` : ''}
+      ${beer.style   ? `<div class="card-style">${escHtml(beer.style)}</div>` : ''}
+      <div class="card-footer">
+        ${ratingHtml}
+        <a class="card-link" href="${escHtml(beer.url)}" target="_blank" rel="noopener">
+          View ↗
+        </a>
+      </div>`;
+  }
+
+  function markNotFound(card, query) {
+    card.classList.remove('loading');
+    card.classList.add('not-found');
+    card.innerHTML = `
+      <div class="card-query">${escHtml(query)}</div>
+      <div style="color:var(--muted);font-size:0.9rem;margin-top:4px;">Not found on Untappd</div>`;
+  }
+
+  function markError(card, query, msg) {
+    card.classList.remove('loading');
+    card.classList.add('not-found');
+    card.innerHTML = `
+      <div class="card-query">${escHtml(query)}</div>
+      <div style="color:#c0392b;font-size:0.85rem;margin-top:4px;">Error: ${escHtml(msg)}</div>`;
+  }
+
+  // ── Rating helpers ────────────────────────────────────────────────────────
+
+  function ratingStyle(rating) {
+    if (rating == null) return { cls: 'rating-none', dotCls: '', label: '' };
+    if (rating >= 4.0) return { cls: 'rating-great', dotCls: 'dot-great', label: 'Great' };
+    if (rating >= 3.5) return { cls: 'rating-good',  dotCls: 'dot-good',  label: 'Good'  };
+    if (rating >= 3.0) return { cls: 'rating-avg',   dotCls: 'dot-avg',   label: 'Avg'   };
+    return               { cls: 'rating-low',  dotCls: 'dot-low',  label: 'Low'   };
+  }
+
+  // ── PWA service worker ────────────────────────────────────────────────────
+
+  function registerServiceWorker() {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').catch(() => {
+        // Service worker is optional; app works without it
+      });
+    }
+  }
+
+  // ── Util ──────────────────────────────────────────────────────────────────
+
+  function escHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+</script>
+</body>
+</html>
