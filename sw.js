@@ -1,9 +1,12 @@
-// TapRater Service Worker — enables offline shell and "Add to Home Screen"
-const CACHE = 'taprater-v4';
-const SHELL = ['./', './index.html', './manifest.json', './icon.svg'];
+// TapRater Service Worker
+const CACHE = 'taprater-v5';
+
+// Only cache truly static assets — NOT index.html.
+// index.html is always fetched fresh so code changes show up immediately.
+const STATIC = ['./manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)));
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(STATIC)));
   self.skipWaiting();
 });
 
@@ -17,11 +20,23 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
-  // Network-first for API calls; cache-first for app shell
-  if (e.request.url.includes('workers.dev') || e.request.url.includes('cdn.jsdelivr')) {
-    e.respondWith(fetch(e.request));
+  const url = e.request.url;
+
+  // Always fetch fresh: the HTML page, API calls, and CDN libraries.
+  // This ensures code changes in index.html are never blocked by cache.
+  if (
+    url.includes('workers.dev') ||
+    url.includes('cdn.jsdelivr') ||
+    url.includes('index.html') ||
+    url.endsWith('/')
+  ) {
+    e.respondWith(
+      fetch(e.request).catch(() => caches.match(e.request))
+    );
     return;
   }
+
+  // Cache-first for static assets (icon, manifest)
   e.respondWith(
     caches.match(e.request).then(cached => cached || fetch(e.request))
   );
