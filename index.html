@@ -497,6 +497,7 @@
 
   // Stores the last set of found beers so sort/group can re-render without re-fetching
   let beerResults = []; // [{ name, beer }]
+  let activeView = null; // 'sort' | 'group' | null
 
   // ── Init ──────────────────────────────────────────────────────────────────
 
@@ -742,6 +743,7 @@
 
     goTo('results');
     beerResults = [];
+    activeView = null;
     document.getElementById('results-controls').classList.add('hidden');
     setActiveControl(null);
 
@@ -809,6 +811,8 @@
   }
 
   function sortByRating() {
+    if (activeView === 'sort') { renderOriginal(); return; }
+    activeView = 'sort';
     setActiveControl('btn-sort');
     const sorted = [...beerResults].sort((a, b) => (b.beer.rating ?? -1) - (a.beer.rating ?? -1));
     const container = document.getElementById('results');
@@ -822,6 +826,8 @@
   }
 
   function groupByStyle() {
+    if (activeView === 'group') { renderOriginal(); return; }
+    activeView = 'group';
     setActiveControl('btn-group');
     // Bucket beers by category
     const groups = new Map();
@@ -851,6 +857,19 @@
         container.appendChild(card);
       }
     }
+  }
+
+  function renderOriginal() {
+    activeView = null;
+    setActiveControl(null);
+    const container = document.getElementById('results');
+    container.innerHTML = '';
+    beerResults.forEach(({ beer }) => {
+      const card = document.createElement('div');
+      card.className = 'beer-card';
+      fillCard(card, beer);
+      container.appendChild(card);
+    });
   }
 
   function setActiveControl(activeId) {
