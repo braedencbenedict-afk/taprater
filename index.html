@@ -450,7 +450,7 @@
   </main>
 
   <footer style="text-align:center;padding:12px;font-size:0.72rem;color:var(--muted);">
-    TapRater 2026-02-23-2
+    TapRater 2026-02-23-4
   </footer>
 </div>
 
@@ -531,35 +531,59 @@
   }
 
   // Detect whether the OCR'd page has two columns and, if so, re-order the
-  // lines so the left column is read fully top-to-bottom before the right.
+  // text so the left column is read fully top-to-bottom before the right.
   //
-  // Tesseract reads across the page row by row, so without this a two-column
-  // menu produces interleaved left/right text on each line.
+  // We work at the WORD level (individual bounding boxes) rather than lines,
+  // because Tesseract merges both columns into one "line" when they share the
+  // same y-position — making data.lines useless for two-column menus.
   function reconstructColumnText(data) {
-    const lines = (data.lines || [])
-      .map(l => ({ text: l.text.trim(), bbox: l.bbox }))
-      .filter(l => l.text.length > 0);
+    const words = (data.words || [])
+      .map(w => ({ text: w.text.trim(), bbox: w.bbox }))
+      .filter(w => w.text.length > 0);
 
-    if (lines.length < 4) return data.text;
+    if (words.length < 10) return data.text;
 
-    const pageWidth = Math.max(...lines.map(l => l.bbox.x1));
+    const pageWidth = Math.max(...words.map(w => w.bbox.x1));
     if (pageWidth < 10) return data.text;
 
-    // Split lines by where they START horizontally.
-    // Lines beginning past 38% of the page width are considered right-column.
-    const threshold = pageWidth * 0.38;
-    const leftLines  = lines.filter(l => l.bbox.x0 <= threshold);
-    const rightLines = lines.filter(l => l.bbox.x0 >  threshold);
+    // Use the horizontal midpoint as the column split.
+    // Words whose center x is left of mid → left column; right of mid → right column.
+    const mid = pageWidth * 0.5;
+    const leftWords  = words.filter(w => (w.bbox.x0 + w.bbox.x1) / 2 <  mid);
+    const rightWords = words.filter(w => (w.bbox.x0 + w.bbox.x1) / 2 >= mid);
 
-    // Only reorder if the right side has substantial content (≥20% of lines).
-    // A single-column menu with slight indentation won't trigger this.
-    if (rightLines.length < 2 || rightLines.length < lines.length * 0.2) {
+    // Only treat as two-column if the right side has substantial content.
+    if (rightWords.length < words.length * 0.15) {
       return data.text;
     }
 
-    // Sort each column top-to-bottom then concatenate left → right.
-    leftLines.sort((a, b)  => a.bbox.y0 - b.bbox.y0);
-    rightLines.sort((a, b) => a.bbox.y0 - b.bbox.y0);
+    // Group words into lines using vertical proximity.
+    // Two words are on the same line if their y0 values are within half an
+    // average word-height of each other.
+    const avgH = words.reduce((s, w) => s + (w.bbox.y1 - w.bbox.y0), 0) / words.length;
+    const tolerance = avgH * 0.6;
+
+    function groupIntoLines(ws) {
+      const sorted = [...ws].sort((a, b) => a.bbox.y0 - b.bbox.y0);
+      const lines = [];
+      let group = [sorted[0]];
+
+      for (let i = 1; i < sorted.length; i++) {
+        if (sorted[i].bbox.y0 - group[0].bbox.y0 <= tolerance) {
+          group.push(sorted[i]);
+        } else {
+          group.sort((a, b) => a.bbox.x0 - b.bbox.x0);
+          lines.push({ y: group[0].bbox.y0, text: group.map(w => w.text).join(' ') });
+          group = [sorted[i]];
+        }
+      }
+      group.sort((a, b) => a.bbox.x0 - b.bbox.x0);
+      lines.push({ y: group[0].bbox.y0, text: group.map(w => w.text).join(' ') });
+      return lines.sort((a, b) => a.y - b.y);
+    }
+
+    const leftLines  = groupIntoLines(leftWords);
+    const rightLines = groupIntoLines(rightWords);
 
     return [...leftLines, ...rightLines].map(l => l.text).join('\n');
   }
@@ -576,13 +600,17 @@
         if (l.length < 3)   return false;  // too short to be a beer name
         if (l.length > 55)  return false;  // probably a description sentence
 
-        if (/\$[\d.]/.test(l))                   return false;  // price ($8.00)
-        if (/%/.test(l))                          return false;  // ABV% (7%)
-        if (/\b(ABV|IBU)\b/i.test(l))            return false;  // brewing stats
+        if (/\|/.test(l))             return false;  // size | price spec lines
+        if (/^\*/.test(l))            return false;  // *flavour description lines
+        if (/;/.test(l))              return false;  // semicolons = description prose
+        if (/\$[\d.]/.test(l))       return false;  // price ($8.00)
+        if (/%/.test(l))              return false;  // ABV% — universal across all menus
+        if (/\b(ABV|IBU)\b/i.test(l)) return false; // explicit brewing stat labels
         if (/\b(oz|ounce|pint|glass|pitcher|flight|growler)\b/i.test(l)) return false; // serving sizes
-        if (/^\d[\d\s.,\-]*$/.test(l))           return false;  // purely numeric
-        if (/^[\W_]+$/.test(l))                  return false;  // no letters at all
-        if (/^(tap list|beer menu|our beers|on tap|draft list|beverages|drinks menu)$/i.test(l)) return false; // section headers
+        if (/,\s*[A-Z]{2}$/.test(l)) return false;  // location lines (St. Louis, MO)
+        if (/^\d[\d\s.,\-]*$/.test(l)) return false; // purely numeric
+        if (/^[\W_]+$/.test(l))       return false;  // no letters at all
+        if (/^(tap list|beer menu|our beers|on tap|draft list|beverages|drinks menu|guest tap|year.round offerings|limited releases?)$/i.test(l)) return false; // section headers
 
         // Deduplicate (case-insensitive)
         const key = l.toLowerCase();
