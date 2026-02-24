@@ -450,7 +450,7 @@
   </main>
 
   <footer style="text-align:center;padding:12px;font-size:0.72rem;color:var(--muted);">
-    TapRater 2026-02-23-5
+    TapRater 2026-02-23-6
   </footer>
 </div>
 
@@ -677,11 +677,11 @@
         if (/\$[\d.]/.test(l))        return false;  // price ($8.00)
         if (/%/.test(l))               return false;  // remaining ABV%
         if (/\b(ABV|IBU)\b/i.test(l))  return false;  // remaining stat labels
-        if (/\b(oz|ounce|pint|glass|pitcher|flight|growler)\b/i.test(l)) return false;
+        if (/\b(oz|ounce|pint|glass|pitcher|flight|growler)\b|\d+oz\b/i.test(l)) return false;
         if (/,\s*[A-Z]{2}$/.test(l))  return false;  // "St. Louis, MO"
         if (/^\d[\d\s.,\-]*$/.test(l)) return false;  // purely numeric
         if (/^[\W_]+$/.test(l))        return false;  // no letters at all
-        if (/^(tap list|beer menu|our beers|on tap|draft list|beverages|drinks menu|guest tap|year.round offerings|limited releases?)$/i.test(l)) return false;
+        if (/^(tap list|tap|beer menu|beer name|beer|our beers|on tap|draft list|draft beer|draft|beverages|drinks menu|guest tap|guest tap:|year.round offerings|limited releases?|hops?|lagers?|wheats?|stouts?|ales?|sours?|ipas?|seasonals?|pilsners?|featured|specials?|hoppy|roasty|kolsch|saisons?|seltzers?|ciders?|wines?|cocktails?|spirits?|non.alcoholic|na beers?)$/i.test(l)) return false;
 
         const key = l.toLowerCase();
         if (seen.has(key)) return false;
