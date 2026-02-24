@@ -450,7 +450,7 @@
   </main>
 
   <footer style="text-align:center;padding:12px;font-size:0.72rem;color:var(--muted);">
-    TapRater 2026-02-23-5
+    TapRater 2026-02-23-4
   </footer>
 </div>
 
@@ -530,13 +530,12 @@
     return reconstructColumnText(data);
   }
 
-  // Re-order OCR output into proper reading order for multi-column menus.
+  // Detect whether the OCR'd page has two columns and, if so, re-order the
+  // text so the left column is read fully top-to-bottom before the right.
   //
-  // Works at the WORD level (individual bounding boxes) because Tesseract
-  // merges both columns into one "line" at the same y — making data.lines
-  // useless for multi-column menus.
-  //
-  // Handles 1–4+ columns by detecting gaps in the horizontal word distribution.
+  // We work at the WORD level (individual bounding boxes) rather than lines,
+  // because Tesseract merges both columns into one "line" when they share the
+  // same y-position — making data.lines useless for two-column menus.
   function reconstructColumnText(data) {
     const words = (data.words || [])
       .map(w => ({ text: w.text.trim(), bbox: w.bbox }))
@@ -547,69 +546,28 @@
     const pageWidth = Math.max(...words.map(w => w.bbox.x1));
     if (pageWidth < 10) return data.text;
 
-    // ── Detect column boundaries via gap analysis ──────────────────────────
-    // Build a density histogram of word-center x-positions.
-    // Runs of sparse buckets between dense regions = gaps between columns.
-    function findColumnSplits() {
-      const BINS = 200;
-      const hist = new Array(BINS).fill(0);
-      words.forEach(w => {
-        const cx = (w.bbox.x0 + w.bbox.x1) / 2;
-        hist[Math.min(Math.floor(cx / pageWidth * BINS), BINS - 1)]++;
-      });
+    // Use the horizontal midpoint as the column split.
+    // Words whose center x is left of mid → left column; right of mid → right column.
+    const mid = pageWidth * 0.5;
+    const leftWords  = words.filter(w => (w.bbox.x0 + w.bbox.x1) / 2 <  mid);
+    const rightWords = words.filter(w => (w.bbox.x0 + w.bbox.x1) / 2 >= mid);
 
-      const sparseThreshold = Math.max(1, (words.length / BINS) * 0.15);
-      const margin = Math.floor(BINS * 0.05); // ignore outer 5% edges
-      const splits = [];
-      let gapStart = -1;
-
-      for (let i = margin; i < BINS - margin; i++) {
-        if (hist[i] <= sparseThreshold) {
-          if (gapStart < 0) gapStart = i;
-        } else if (gapStart >= 0) {
-          if (i - gapStart >= BINS * 0.03) { // gap must span ≥3% of page width
-            splits.push((gapStart + i) / 2 / BINS * pageWidth);
-          }
-          gapStart = -1;
-        }
-      }
-      return splits;
-    }
-
-    const splits = findColumnSplits();
-
-    // Single column — return default text unchanged
-    if (splits.length === 0) return data.text;
-
-    // Verify right-side columns have meaningful content
-    const firstSplit = splits[0];
-    if (words.filter(w => (w.bbox.x0 + w.bbox.x1) / 2 > firstSplit).length < words.length * 0.15) {
+    // Only treat as two-column if the right side has substantial content.
+    if (rightWords.length < words.length * 0.15) {
       return data.text;
     }
 
-    // ── Assign words to columns ────────────────────────────────────────────
-    const boundaries = [0, ...splits, pageWidth];
-    const columns    = boundaries.slice(1).map(() => []);
-
-    words.forEach(w => {
-      const cx = (w.bbox.x0 + w.bbox.x1) / 2;
-      for (let i = 0; i < boundaries.length - 1; i++) {
-        if (cx >= boundaries[i] && cx < boundaries[i + 1]) {
-          columns[i].push(w);
-          break;
-        }
-      }
-    });
-
-    // ── Group each column's words into text lines ──────────────────────────
-    const avgH      = words.reduce((s, w) => s + (w.bbox.y1 - w.bbox.y0), 0) / words.length;
+    // Group words into lines using vertical proximity.
+    // Two words are on the same line if their y0 values are within half an
+    // average word-height of each other.
+    const avgH = words.reduce((s, w) => s + (w.bbox.y1 - w.bbox.y0), 0) / words.length;
     const tolerance = avgH * 0.6;
 
     function groupIntoLines(ws) {
-      if (ws.length === 0) return [];
       const sorted = [...ws].sort((a, b) => a.bbox.y0 - b.bbox.y0);
       const lines = [];
       let group = [sorted[0]];
+
       for (let i = 1; i < sorted.length; i++) {
         if (sorted[i].bbox.y0 - group[0].bbox.y0 <= tolerance) {
           group.push(sorted[i]);
@@ -624,10 +582,10 @@
       return lines.sort((a, b) => a.y - b.y);
     }
 
-    // Output: column 1 top→bottom, then column 2, then column 3, etc.
-    return columns
-      .flatMap(colWords => groupIntoLines(colWords).map(l => l.text))
-      .join('\n');
+    const leftLines  = groupIntoLines(leftWords);
+    const rightLines = groupIntoLines(rightWords);
+
+    return [...leftLines, ...rightLines].map(l => l.text).join('\n');
   }
 
   // ── OCR text cleanup ──────────────────────────────────────────────────────
@@ -638,53 +596,27 @@
     return raw
       .split('\n')
       .map(l => l.trim())
-
-      // ── Transform: extract beer name from formatted lines ────────────────
-      // Run before filtering so we salvage names embedded in spec lines.
-      .map(l => {
-        // Strip leading special markers: ★, bullets, "NEW!" etc.
-        l = l.replace(/^[★✦•◆▸\-–—]+\s*/, '').trim();
-        l = l.replace(/^NEW!\s*/i, '').trim();
-
-        // "Beer Name | ABV: 4.0%" → "Beer Name"
-        // Handles menus (e.g. Schlafly) where name and ABV share one line.
-        if (/\|/.test(l)) {
-          const before = l.split('|')[0].trim();
-          return before.length >= 3 ? before : '';
-        }
-
-        // Strip inline ABV/IBU info that appears without a | separator.
-        // "Some Beer ABV: 4.0%"  → "Some Beer"
-        // "Some Beer 6.5% ABV"   → "Some Beer"
-        // "Some Beer l ABV: 5%"  → "Some Beer"  (OCR reads | as lowercase l)
-        l = l.replace(/\s+l\s+(ABV|IBU).*/i, '').trim();
-        l = l.replace(/\s+(ABV:?|IBU:?)\s*[\d.].*/i, '').trim();
-        l = l.replace(/\s+[\d.]+%\s*(ABV|IBU).*/i, '').trim();
-
-        return l;
-      })
-
-      // ── Filter: remove lines that aren't beer names ──────────────────────
       .filter(l => {
-        if (l.length < 3)   return false;  // too short
-        if (l.length > 60)  return false;  // description sentence
+        if (l.length < 3)   return false;  // too short to be a beer name
+        if (l.length > 55)  return false;  // probably a description sentence
 
-        if (/^\*/.test(l))             return false;  // *flavour line
-        if (/;/.test(l))               return false;  // semicolons = description prose
-        if (/%/.test(l))               return false;  // remaining ABV%
-        if (/\$[\d.]/.test(l))         return false;  // price
-        if (/\b(ABV|IBU)\b/i.test(l))  return false;  // stat labels
-        if (/\b(oz|ounce|pint|glass|pitcher|flight|growler)\b/i.test(l)) return false;
-        if (/,\s*[A-Z]{2}$/.test(l))   return false;  // "St. Louis, MO"
-        if (/^\d[\d\s.,\-]*$/.test(l)) return false;  // purely numeric
-        if (/^[\W_]+$/.test(l))        return false;  // no letters
+        if (/\|/.test(l))             return false;  // size | price spec lines
+        if (/^\*/.test(l))            return false;  // *flavour description lines
+        if (/;/.test(l))              return false;  // semicolons = description prose
+        if (/\$[\d.]/.test(l))       return false;  // price ($8.00)
+        if (/%/.test(l))              return false;  // ABV% — universal across all menus
+        if (/\b(ABV|IBU)\b/i.test(l)) return false; // explicit brewing stat labels
+        if (/\b(oz|ounce|pint|glass|pitcher|flight|growler)\b/i.test(l)) return false; // serving sizes
+        if (/,\s*[A-Z]{2}$/.test(l)) return false;  // location lines (St. Louis, MO)
+        if (/^\d[\d\s.,\-]*$/.test(l)) return false; // purely numeric
+        if (/^[\W_]+$/.test(l))       return false;  // no letters at all
+        if (/^(tap list|beer menu|our beers|on tap|draft list|beverages|drinks menu|guest tap|year.round offerings|limited releases?)$/i.test(l)) return false; // section headers
 
-        // Common section headers and table headers across all menu formats
-        if (/^(tap list|beer menu|our beers|on tap|draft list|draft|beverages|drinks menu|guest tap|year.round offerings?|limited releases?|beer name|hops|lagers?|stouts?|sours?|ales?|pilsners?|ipas?|wheats?|kettle sours?)$/i.test(l)) return false;
-
+        // Deduplicate (case-insensitive)
         const key = l.toLowerCase();
         if (seen.has(key)) return false;
         seen.add(key);
+
         return true;
       })
       .join('\n');
