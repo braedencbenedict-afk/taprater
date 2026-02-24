@@ -393,7 +393,7 @@
   // ─────────────────────────────────────────────────────────────────────────
   // CONFIG — Replace this URL after deploying your Cloudflare Worker
   // ─────────────────────────────────────────────────────────────────────────
-  const WORKER_URL = 'broad-disk-ef19.braeden-c-benedict.workers.dev';
+  const WORKER_URL = 'https://broad-disk-ef19.braeden-c-benedict.workers.dev';
 
   // ── Init ──────────────────────────────────────────────────────────────────
 
@@ -430,7 +430,7 @@
 
     try {
       const text = await runOCR(file);
-      document.getElementById('beer-list').value = text.trim();
+      document.getElementById('beer-list').value = cleanOcrText(text);
       goTo('edit');
     } catch (err) {
       alert('OCR failed: ' + err.message + '\n\nYou can type beer names manually instead.');
@@ -460,6 +460,36 @@
     });
 
     return text;
+  }
+
+  // ── OCR text cleanup ──────────────────────────────────────────────────────
+
+  function cleanOcrText(raw) {
+    const seen = new Set();
+
+    return raw
+      .split('\n')
+      .map(l => l.trim())
+      .filter(l => {
+        if (l.length < 3)   return false;  // too short to be a beer name
+        if (l.length > 55)  return false;  // probably a description sentence
+
+        if (/\$[\d.]/.test(l))                   return false;  // price ($8.00)
+        if (/%/.test(l))                          return false;  // ABV% (7%)
+        if (/\b(ABV|IBU)\b/i.test(l))            return false;  // brewing stats
+        if (/\b(oz|ounce|pint|glass|pitcher|flight|growler)\b/i.test(l)) return false; // serving sizes
+        if (/^\d[\d\s.,\-]*$/.test(l))           return false;  // purely numeric
+        if (/^[\W_]+$/.test(l))                  return false;  // no letters at all
+        if (/^(tap list|beer menu|our beers|on tap|draft list|beverages|drinks menu)$/i.test(l)) return false; // section headers
+
+        // Deduplicate (case-insensitive)
+        const key = l.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+
+        return true;
+      })
+      .join('\n');
   }
 
   // ── Untappd search ────────────────────────────────────────────────────────
