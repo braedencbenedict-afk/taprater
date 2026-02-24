@@ -361,6 +361,18 @@
       <p class="step-title">Scan a beer menu</p>
       <p class="step-sub">Take a photo or upload an image of the menu.</p>
 
+      <label style="display:block;margin-bottom:16px;">
+        <span style="font-size:0.85rem;color:var(--muted);display:block;margin-bottom:6px;">
+          Brewery name <span style="color:var(--gold)">(optional — improves search accuracy)</span>
+        </span>
+        <input
+          type="text"
+          id="brewery-input"
+          placeholder="e.g. Bell's Brewery"
+          style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:1rem;padding:12px 14px;font-family:inherit;"
+        />
+      </label>
+
       <div class="capture-icon">📷</div>
 
       <input type="file" id="camera-input" accept="image/*" capture="environment" />
@@ -371,6 +383,9 @@
       </button>
       <button class="btn btn-secondary" onclick="document.getElementById('file-input').click()">
         🖼️ Upload Image
+      </button>
+      <button class="btn btn-secondary" onclick="skipToManual()">
+        ✏️ Enter Beer Names Manually
       </button>
 
       <!-- Debug panel — helps diagnose connection issues -->
@@ -405,8 +420,8 @@
       <p class="step-title">Edit the beer list</p>
 
       <div class="editor-hint">
-        The OCR pulled all text from the menu. <strong>Edit it down to just the beer names</strong> —
-        one per line. Delete descriptions, prices, ABV%, etc. Then tap Search.
+        One beer name per line. If you used OCR, <strong>delete everything that isn't a beer name</strong> —
+        prices, descriptions, ABV%, etc. Then tap Search.
       </div>
 
       <textarea id="beer-list" placeholder="One beer name per line&#10;&#10;Example:&#10;Two Hearted Ale&#10;Founders All Day IPA&#10;Bells Oberon"></textarea>
@@ -590,8 +605,19 @@
     sub.textContent = `Found ${found} of ${names.length} beers on Untappd.`;
   }
 
+  function getBrewery() {
+    return document.getElementById('brewery-input').value.trim();
+  }
+
+  function skipToManual() {
+    document.getElementById('beer-list').value = '';
+    goTo('edit');
+  }
+
   async function fetchBeer(query) {
-    const url = `${WORKER_URL}?q=${encodeURIComponent(query)}`;
+    const brewery = getBrewery();
+    const searchQuery = brewery ? `${query} ${brewery}` : query;
+    const url = `${WORKER_URL}?q=${encodeURIComponent(searchQuery)}`;
     const resp = await fetch(url);
 
     if (!resp.ok) {
