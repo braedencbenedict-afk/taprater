@@ -595,7 +595,7 @@
           found++;
           fillCard(card, result);
         } else {
-          markNotFound(card, name);
+          markNotFound(card);
         }
       } catch (err) {
         markError(card, name, err.message);
@@ -687,7 +687,7 @@
   function fillCard(card, beer) {
     card.classList.remove('loading');
 
-    const { cls, dotCls, label } = ratingStyle(beer.rating);
+    const { cls, dotCls } = ratingStyle(beer.rating);
 
     const ratingHtml = beer.rating != null
       ? `<div class="rating-badge ${cls}">
@@ -696,24 +696,37 @@
          </div>`
       : `<span class="rating-none">No rating yet</span>`;
 
+    // Extract numeric beer ID from URL (e.g. ".../4133" → "4133")
+    // Used for the native app URI scheme which avoids the cold-start deep link bug
+    // where Android opens the Untappd app home screen instead of the specific beer.
+    const id = beer.url.match(/\/(\d+)$/)?.[1] ?? '';
+
     card.innerHTML = `
       <div class="card-name">${escHtml(beer.name)}</div>
       ${beer.brewery ? `<div class="card-brewery">${escHtml(beer.brewery)}</div>` : ''}
       ${beer.style   ? `<div class="card-style">${escHtml(beer.style)}</div>` : ''}
       <div class="card-footer">
         ${ratingHtml}
-        <a class="card-link" href="${escHtml(beer.url)}" target="_blank" rel="noopener">
+        <a class="card-link" href="${escHtml(beer.url)}"
+           onclick="openBeer('${id}', '${escHtml(beer.url)}', event)"
+           rel="noopener">
           View ↗
         </a>
       </div>`;
   }
 
-  function markNotFound(card, query) {
-    card.classList.remove('loading');
-    card.classList.add('not-found');
-    card.innerHTML = `
-      <div class="card-query">${escHtml(query)}</div>
-      <div style="color:var(--muted);font-size:0.9rem;margin-top:4px;">Not found on Untappd</div>`;
+  function openBeer(id, webUrl, event) {
+    event.preventDefault();
+    // Try native URI scheme first — bypasses App Links cold-start bug
+    window.location.href = `untappd://beer/${id}`;
+    // If Untappd isn't installed, fall back to web URL after a short delay.
+    // When the app opens successfully the page goes to background and this is suppressed.
+    setTimeout(() => window.open(webUrl, '_blank'), 750);
+  }
+
+  function markNotFound(card) {
+    // Silently remove — a "not found" result is almost certainly OCR noise, not a real beer.
+    card.remove();
   }
 
   function markError(card, query, msg) {
