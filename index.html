@@ -237,12 +237,14 @@
       flex-shrink: 0;
     }
 
+    .rating-elite  { color: #4a9edd; }
     .rating-great  { color: #5cb85c; }
     .rating-good   { color: #8fbe5c; }
     .rating-avg    { color: #e8882a; }
     .rating-low    { color: #c0392b; }
     .rating-none   { color: var(--muted); font-size: 0.85rem; font-weight: 400; }
 
+    .dot-elite  { background: #4a9edd; }
     .dot-great  { background: #5cb85c; }
     .dot-good   { background: #8fbe5c; }
     .dot-avg    { background: #e8882a; }
@@ -278,6 +280,31 @@
       display: flex;
       gap: 10px;
     }
+
+    /* ── Results controls ───────────────────────────────────── */
+    #results-controls {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+
+    .btn-secondary.btn-active {
+      border-color: var(--gold-dim);
+      color: var(--gold);
+    }
+
+    .style-header {
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--gold-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      padding: 16px 0 6px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 4px;
+    }
+    .style-header:first-child { padding-top: 0; }
 
     /* ── Util ────────────────────────────────────────────────── */
     .hidden { display: none !important; }
@@ -439,6 +466,11 @@
       <p class="step-title">Ratings</p>
       <p class="step-sub" id="results-sub">Searching…</p>
 
+      <div id="results-controls" class="hidden">
+        <button id="btn-sort" class="btn btn-secondary btn-sm" onclick="sortByRating()">↓ Sort by Rating</button>
+        <button id="btn-group" class="btn btn-secondary btn-sm" onclick="groupByStyle()">⊞ Group by Style</button>
+      </div>
+
       <div id="results"></div>
 
       <div class="results-actions">
@@ -450,7 +482,7 @@
   </main>
 
   <footer style="text-align:center;padding:12px;font-size:0.72rem;color:var(--muted);">
-    TapRater 2026-02-23-6
+    TapRater 2026-02-24
   </footer>
 </div>
 
@@ -462,6 +494,9 @@
   // CONFIG — Replace this URL after deploying your Cloudflare Worker
   // ─────────────────────────────────────────────────────────────────────────
   const WORKER_URL = 'https://broad-disk-ef19.braeden-c-benedict.workers.dev';
+
+  // Stores the last set of found beers so sort/group can re-render without re-fetching
+  let beerResults = []; // [{ name, beer }]
 
   // ── Init ──────────────────────────────────────────────────────────────────
 
@@ -706,6 +741,9 @@
     }
 
     goTo('results');
+    beerResults = [];
+    document.getElementById('results-controls').classList.add('hidden');
+    setActiveControl(null);
 
     const sub = document.getElementById('results-sub');
     sub.textContent = `Searching for ${names.length} beer${names.length > 1 ? 's' : ''}…`;
@@ -721,14 +759,16 @@
     });
 
     let found = 0;
+    const resultsArr = new Array(names.length).fill(null);
 
     // Fetch all in parallel
-    await Promise.all(cards.map(async ({ name, card }) => {
+    await Promise.all(cards.map(async ({ name, card }, i) => {
       try {
         const result = await fetchBeer(name);
         if (result) {
           found++;
           fillCard(card, result);
+          resultsArr[i] = { name, beer: result };
         } else {
           markNotFound(card);
         }
@@ -737,7 +777,87 @@
       }
     }));
 
+    beerResults = resultsArr.filter(Boolean);
     sub.textContent = `Found ${found} of ${names.length} beers on Untappd.`;
+    if (beerResults.length > 0) {
+      document.getElementById('results-controls').classList.remove('hidden');
+    }
+  }
+
+  // ── Sort & group ──────────────────────────────────────────────────────────
+
+  const STYLE_CATEGORIES = [
+    { label: 'Hazy / New England IPA', test: s => /new england|hazy|neipa/i.test(s) },
+    { label: 'West Coast IPA',         test: s => /\bipa\b/i.test(s) },
+    { label: 'Pale Ale',               test: s => /pale ale/i.test(s) },
+    { label: 'Stout',                  test: s => /stout/i.test(s) },
+    { label: 'Porter',                 test: s => /porter/i.test(s) },
+    { label: 'Sour & Wild Ale',        test: s => /sour|wild ale|lambic|gose|berliner/i.test(s) },
+    { label: 'Belgian & Saison',       test: s => /belgian|tripel|dubbel|quadrupel|witbier|saison|farmhouse/i.test(s) },
+    { label: 'Wheat & Hefeweizen',     test: s => /wheat|hefeweizen|weizen/i.test(s) },
+    { label: 'Lager & Pilsner',        test: s => /lager|pilsner|pilsener/i.test(s) },
+    { label: 'Amber & Red Ale',        test: s => /amber|red ale/i.test(s) },
+    { label: 'Brown Ale',              test: s => /brown/i.test(s) },
+  ];
+
+  function styleCategory(style) {
+    const s = style ?? '';
+    for (const cat of STYLE_CATEGORIES) {
+      if (cat.test(s)) return cat.label;
+    }
+    return 'Other';
+  }
+
+  function sortByRating() {
+    setActiveControl('btn-sort');
+    const sorted = [...beerResults].sort((a, b) => (b.beer.rating ?? -1) - (a.beer.rating ?? -1));
+    const container = document.getElementById('results');
+    container.innerHTML = '';
+    sorted.forEach(({ beer }) => {
+      const card = document.createElement('div');
+      card.className = 'beer-card';
+      fillCard(card, beer);
+      container.appendChild(card);
+    });
+  }
+
+  function groupByStyle() {
+    setActiveControl('btn-group');
+    // Bucket beers by category
+    const groups = new Map();
+    for (const { beer } of beerResults) {
+      const cat = styleCategory(beer.style);
+      if (!groups.has(cat)) groups.set(cat, []);
+      groups.get(cat).push(beer);
+    }
+    // Sort each bucket by rating descending
+    for (const group of groups.values()) {
+      group.sort((a, b) => (b.rating ?? -1) - (a.rating ?? -1));
+    }
+    // Render in canonical category order
+    const container = document.getElementById('results');
+    container.innerHTML = '';
+    const catOrder = [...STYLE_CATEGORIES.map(c => c.label), 'Other'];
+    for (const catLabel of catOrder) {
+      if (!groups.has(catLabel)) continue;
+      const header = document.createElement('div');
+      header.className = 'style-header';
+      header.textContent = catLabel;
+      container.appendChild(header);
+      for (const beer of groups.get(catLabel)) {
+        const card = document.createElement('div');
+        card.className = 'beer-card';
+        fillCard(card, beer);
+        container.appendChild(card);
+      }
+    }
+  }
+
+  function setActiveControl(activeId) {
+    ['btn-sort', 'btn-group'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.classList.toggle('btn-active', id === activeId);
+    });
   }
 
   function getBrewery() {
@@ -872,11 +992,12 @@
   // ── Rating helpers ────────────────────────────────────────────────────────
 
   function ratingStyle(rating) {
-    if (rating == null) return { cls: 'rating-none', dotCls: '', label: '' };
-    if (rating >= 4.0) return { cls: 'rating-great', dotCls: 'dot-great', label: 'Great' };
-    if (rating >= 3.5) return { cls: 'rating-good',  dotCls: 'dot-good',  label: 'Good'  };
-    if (rating >= 3.0) return { cls: 'rating-avg',   dotCls: 'dot-avg',   label: 'Avg'   };
-    return               { cls: 'rating-low',  dotCls: 'dot-low',  label: 'Low'   };
+    if (rating == null) return { cls: 'rating-none',  dotCls: '',           label: ''      };
+    if (rating >= 4.25) return { cls: 'rating-elite', dotCls: 'dot-elite',  label: 'Elite' };
+    if (rating >= 4.0)  return { cls: 'rating-great', dotCls: 'dot-great',  label: 'Great' };
+    if (rating >= 3.5)  return { cls: 'rating-good',  dotCls: 'dot-good',   label: 'Good'  };
+    if (rating >= 3.0)  return { cls: 'rating-avg',   dotCls: 'dot-avg',    label: 'Avg'   };
+    return                     { cls: 'rating-low',   dotCls: 'dot-low',    label: 'Low'   };
   }
 
   // ── PWA service worker ────────────────────────────────────────────────────
