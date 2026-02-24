@@ -298,6 +298,46 @@
       border-radius: 4px;
       font-family: monospace;
     }
+
+    /* ── Debug panel ─────────────────────────────────────────── */
+    #debug-panel {
+      margin-top: 24px;
+      border: 1px solid #3d2500;
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    #debug-toggle {
+      width: 100%;
+      background: var(--surface);
+      border: none;
+      color: var(--muted);
+      font-size: 0.8rem;
+      padding: 10px 14px;
+      text-align: left;
+      cursor: pointer;
+    }
+    #debug-body {
+      background: #0a0a0a;
+      padding: 12px 14px;
+      font-family: monospace;
+      font-size: 0.75rem;
+      color: #aaa;
+      white-space: pre-wrap;
+      word-break: break-all;
+      display: none;
+    }
+    #debug-body.open { display: block; }
+    #debug-test-btn {
+      margin-top: 10px;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      color: var(--gold);
+      font-size: 0.8rem;
+      padding: 7px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      width: 100%;
+    }
   </style>
 </head>
 <body>
@@ -332,6 +372,15 @@
       <button class="btn btn-secondary" onclick="document.getElementById('file-input').click()">
         🖼️ Upload Image
       </button>
+
+      <!-- Debug panel — helps diagnose connection issues -->
+      <div id="debug-panel">
+        <button id="debug-toggle" onclick="toggleDebug()">🔧 Debug info</button>
+        <div id="debug-body">
+          <div id="debug-log">Loading…</div>
+          <button id="debug-test-btn" onclick="testWorkerConnection()">▶ Test Worker Connection</button>
+        </div>
+      </div>
     </div>
 
     <!-- ── Step 2: OCR progress ────────────────────────────── -->
@@ -545,12 +594,54 @@
     const url = `${WORKER_URL}?q=${encodeURIComponent(query)}`;
     const resp = await fetch(url);
 
-    if (!resp.ok) throw new Error(`Worker returned ${resp.status}`);
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '(no body)');
+      throw new Error(`HTTP ${resp.status} from: ${url}\n\nResponse: ${body.slice(0, 200)}`);
+    }
 
     const data = await resp.json();
     if (data.error) throw new Error(data.error);
 
-    return data.results?.[0] ?? null;  // Return best match (first result)
+    return data.results?.[0] ?? null;
+  }
+
+  // ── Debug helpers ─────────────────────────────────────────────────────────
+
+  function toggleDebug() {
+    const body = document.getElementById('debug-body');
+    const isOpen = body.classList.toggle('open');
+    if (isOpen) refreshDebugLog();
+  }
+
+  function refreshDebugLog() {
+    document.getElementById('debug-log').textContent =
+      `WORKER_URL : ${WORKER_URL}\n` +
+      `Page URL   : ${location.href}\n` +
+      `SW active  : ${'serviceWorker' in navigator ? 'supported' : 'not supported'}\n` +
+      `User agent : ${navigator.userAgent.slice(0, 80)}`;
+  }
+
+  async function testWorkerConnection() {
+    const btn = document.getElementById('debug-test-btn');
+    const log = document.getElementById('debug-log');
+    btn.textContent = 'Testing…';
+    btn.disabled = true;
+
+    const url = `${WORKER_URL}?q=Oberon`;
+    log.textContent = `Fetching: ${url}\n\n`;
+
+    try {
+      const resp = await fetch(url);
+      const body = await resp.text();
+      log.textContent +=
+        `Status : ${resp.status} ${resp.statusText}\n` +
+        `Body   : ${body.slice(0, 400)}`;
+    } catch (err) {
+      log.textContent += `Network error: ${err.message}`;
+    }
+
+    btn.textContent = '▶ Test Worker Connection';
+    btn.disabled = false;
   }
 
   // ── Card builders ─────────────────────────────────────────────────────────
