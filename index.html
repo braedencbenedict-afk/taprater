@@ -450,7 +450,7 @@
   </main>
 
   <footer style="text-align:center;padding:12px;font-size:0.72rem;color:var(--muted);">
-    TapRater 2026-02-23-1
+    TapRater 2026-02-23-2
   </footer>
 </div>
 
@@ -511,7 +511,7 @@
     const progressEl = document.getElementById('ocr-progress');
     const statusEl   = document.getElementById('ocr-status');
 
-    const { data: { text } } = await Tesseract.recognize(file, 'eng', {
+    const { data } = await Tesseract.recognize(file, 'eng', {
       logger(m) {
         if (m.status === 'recognizing text') {
           const pct = Math.round(m.progress * 100);
@@ -527,7 +527,41 @@
       },
     });
 
-    return text;
+    return reconstructColumnText(data);
+  }
+
+  // Detect whether the OCR'd page has two columns and, if so, re-order the
+  // lines so the left column is read fully top-to-bottom before the right.
+  //
+  // Tesseract reads across the page row by row, so without this a two-column
+  // menu produces interleaved left/right text on each line.
+  function reconstructColumnText(data) {
+    const lines = (data.lines || [])
+      .map(l => ({ text: l.text.trim(), bbox: l.bbox }))
+      .filter(l => l.text.length > 0);
+
+    if (lines.length < 4) return data.text;
+
+    const pageWidth = Math.max(...lines.map(l => l.bbox.x1));
+    if (pageWidth < 10) return data.text;
+
+    // Split lines by where they START horizontally.
+    // Lines beginning past 38% of the page width are considered right-column.
+    const threshold = pageWidth * 0.38;
+    const leftLines  = lines.filter(l => l.bbox.x0 <= threshold);
+    const rightLines = lines.filter(l => l.bbox.x0 >  threshold);
+
+    // Only reorder if the right side has substantial content (≥20% of lines).
+    // A single-column menu with slight indentation won't trigger this.
+    if (rightLines.length < 2 || rightLines.length < lines.length * 0.2) {
+      return data.text;
+    }
+
+    // Sort each column top-to-bottom then concatenate left → right.
+    leftLines.sort((a, b)  => a.bbox.y0 - b.bbox.y0);
+    rightLines.sort((a, b) => a.bbox.y0 - b.bbox.y0);
+
+    return [...leftLines, ...rightLines].map(l => l.text).join('\n');
   }
 
   // ── OCR text cleanup ──────────────────────────────────────────────────────
