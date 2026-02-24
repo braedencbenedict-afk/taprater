@@ -471,8 +471,24 @@
       .split('\n')
       .map(l => l.trim())
       .filter(l => {
-        if (l.length < 3)   return false;  // too short to be a beer name
-        if (l.length > 55)  return false;  // probably a description sentence
+        if (l.length < 3)  return false;  // too short to be a beer name
+        if (l.length > 55) return false;  // probably a description sentence
+
+        // Must be mostly letters — catches gobbledygook from menu borders/logos.
+        // e.g. "|||@#~||" or "Wr3$t!ng" from decorative headers/footers.
+        const letterCount = (l.match(/[a-zA-Z]/g) || []).length;
+        if (letterCount / l.length < 0.55) return false;
+
+        // Repeated special characters are OCR artifacts (|||, ===, ---)
+        if (/([|\\~^*@#<>{}\[\]=])\1/.test(l)) return false;
+        if (/[-_.]{3,}/.test(l))               return false;
+
+        // Any word longer than 3 chars with no vowels is garbled OCR
+        // e.g. "Wndng", "BRTSH" — real beer words always have vowels
+        const hasGarbledWord = l.split(/\s+/).some(
+          w => w.length > 3 && !/[aeiouAEIOU]/.test(w)
+        );
+        if (hasGarbledWord) return false;
 
         if (/\$[\d.]/.test(l))                   return false;  // price ($8.00)
         if (/%/.test(l))                          return false;  // ABV% (7%)
