@@ -483,7 +483,7 @@
 
   <!-- VERSION: bump this string + sw.js cache name on every deployment -->
   <footer style="text-align:center;padding:12px;font-size:0.72rem;color:var(--muted);">
-    TapRater 2026-03-01
+    TapRater 2026-03-01-2
   </footer>
 </div>
 
@@ -534,14 +534,45 @@
     goTo('ocr');
 
     try {
-      const text = await runOCR(file);
-      document.getElementById('beer-list').value = cleanOcrText(text);
+      const rawText = await runOCR(file);
+
+      // Try AI cleaning via the Worker; fall back to local filter if it fails
+      // (offline, AI binding not configured, etc.)
+      const statusEl = document.getElementById('ocr-status');
+      statusEl.textContent = 'Cleaning with AI…';
+      let cleaned;
+      try {
+        cleaned = await cleanWithAI(rawText);
+      } catch (aiErr) {
+        console.warn('AI cleaning failed, using local filter:', aiErr.message);
+        statusEl.textContent = 'AI unavailable — using local filter';
+        cleaned = cleanOcrText(rawText);
+      }
+
+      document.getElementById('beer-list').value = cleaned;
       goTo('edit');
     } catch (err) {
       alert('OCR failed: ' + err.message + '\n\nYou can type beer names manually instead.');
       document.getElementById('beer-list').value = '';
       goTo('edit');
     }
+  }
+
+  // Send raw OCR text to the Worker's AI endpoint and return a newline-separated
+  // list of beer names. Throws on network error or non-OK response.
+  async function cleanWithAI(rawText) {
+    const resp = await fetch(WORKER_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: rawText }),
+    });
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      throw new Error(body.error ?? `Worker returned ${resp.status}`);
+    }
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    return (data.names ?? []).join('\n');
   }
 
   async function runOCR(file) {

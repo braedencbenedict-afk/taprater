@@ -1,25 +1,38 @@
 /**
  * TapRater — Cloudflare Worker
  *
- * Scrapes Untappd beer search results and returns JSON.
- * Deploy this file to Cloudflare Workers via the browser dashboard.
+ * Two endpoints:
  *
- * Usage: GET https://your-worker.workers.dev/?q=Two+Hearted+Ale
+ *   POST /           — OCR text cleaning via Workers AI (Llama 3.1 8B).
+ *                      Body: JSON { text: "<raw ocr text>" }
+ *                      Returns: JSON { names: ["Beer 1", "Beer 2", ...] }
+ *                      Requires an AI binding named "AI" in the dashboard.
+ *
+ *   GET /?q=<query>  — Untappd beer search. Scrapes untappd.com and returns
+ *                      beer name/brewery/style/rating as JSON.
+ *
+ * Deploy: paste this file into the Cloudflare Workers dashboard and click Deploy.
+ * AI binding: Settings → Bindings → Add → Workers AI → name it "AI".
  */
 
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
     const cors = {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
     };
 
-    // Handle CORS preflight
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: cors });
     }
 
+    // POST → OCR text cleaning via Workers AI
+    if (request.method === 'POST') {
+      return handleOcrClean(request, env, cors);
+    }
+
+    // GET → Untappd search (existing behaviour)
     const { searchParams } = new URL(request.url);
     const query = searchParams.get('q');
     const debug = searchParams.get('debug') === '1';
@@ -31,8 +44,6 @@ export default {
     try {
       const html = await fetchUntappdSearch(query);
 
-      // Debug mode: return a raw HTML slice around the first beer link so we
-      // can inspect the actual page structure if parsing breaks.
       if (debug) {
         const firstBeer = /href="(\/b\/[^"]+?\/(\d+))"[^>]*>([^<]{2,})<\/a>/;
         const m = firstBeer.exec(html);
@@ -49,7 +60,60 @@ export default {
 };
 
 // ---------------------------------------------------------------------------
-// Fetch
+// OCR cleaning via Workers AI
+// ---------------------------------------------------------------------------
+
+async function handleOcrClean(request, env, cors) {
+  if (!env.AI) {
+    return jsonResponse(
+      { error: 'AI binding not configured. In the Cloudflare dashboard: Worker → Settings → Bindings → Add → Workers AI → name it "AI".' },
+      503, cors,
+    );
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse({ error: 'Request body must be JSON with a "text" field.' }, 400, cors);
+  }
+
+  const text = typeof body?.text === 'string' ? body.text : '';
+  if (!text.trim()) {
+    return jsonResponse({ error: 'Missing or empty "text" field.' }, 400, cors);
+  }
+
+  const prompt =
+    'You are extracting beer names from OCR text scanned from a brewery tap list. ' +
+    'The OCR is imperfect and may contain garbled text, descriptions, prices, and noise.\n\n' +
+    'Return ONLY the beer names, one per line, with no extra text, numbers, bullets, or explanations. ' +
+    'If you are unsure whether a line is a beer name, include it — missing a beer is worse than including noise.\n\n' +
+    'OCR text:\n' +
+    text.slice(0, 4000); // guard against very long input
+
+  try {
+    const response = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 1024,
+    });
+
+    const names = (response.response ?? '')
+      .split('\n')
+      .map(l => l.trim())
+      .map(l => l.replace(/^\d+[.)]\s+/, ''))   // strip "1. " / "1) "
+      .map(l => l.replace(/^[-–•*]\s+/, ''))     // strip "- " / "• "
+      .filter(l => l.length >= 3 && l.length <= 100)
+      // drop lines that look like model preamble rather than beer names
+      .filter(l => !/^(here are|the following|beer names|i('ve)? identified|below|the ocr|these are)/i.test(l));
+
+    return jsonResponse({ names }, 200, cors);
+  } catch (err) {
+    return jsonResponse({ error: `AI inference failed: ${err.message}` }, 500, cors);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Untappd fetch + parse
 // ---------------------------------------------------------------------------
 
 async function fetchUntappdSearch(query) {
@@ -57,7 +121,6 @@ async function fetchUntappdSearch(query) {
 
   const resp = await fetch(url, {
     headers: {
-      // Mimic a real Android Chrome browser to avoid bot-detection
       'User-Agent':
         'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 ' +
         '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
@@ -68,66 +131,32 @@ async function fetchUntappdSearch(query) {
     },
   });
 
-  if (!resp.ok) {
-    throw new Error(`Untappd returned HTTP ${resp.status}`);
-  }
-
+  if (!resp.ok) throw new Error(`Untappd returned HTTP ${resp.status}`);
   return resp.text();
 }
 
-// ---------------------------------------------------------------------------
-// Parse
-// ---------------------------------------------------------------------------
-
-/**
- * Extracts up to 5 beer results from raw Untappd search HTML.
- *
- * Untappd renders beer links as:
- *   <a href="/b/brewery-name-beer-name/12345">Beer Name</a>
- *
- * Each beer appears twice (once wrapping an image, once as plain text).
- * We skip the image-only links by requiring text content of 2+ characters.
- *
- * Nearby spans contain: brewery link, style ("IPA - American"), rating "(3.85)"
- */
 function parseBeers(html) {
   const results = [];
   const seen = new Set();
-
-  // Match beer text links: href="/b/slug/numericId">Name</a>
   const beerLinkRe = /href="(\/b\/[^"]+?\/(\d+))"[^>]*>([^<]{2,})<\/a>/g;
 
   let m;
   while ((m = beerLinkRe.exec(html)) !== null) {
     const [, path, id, rawName] = m;
     const name = rawName.trim();
-
     if (seen.has(id) || !name) continue;
     seen.add(id);
 
-    // Grab a window of HTML after this match to find associated metadata
     const chunk = html.slice(m.index, m.index + 800);
-
-    // All three fields use Untappd's actual CSS classes (confirmed via debug endpoint).
-    // HTML structure per result:
-    //   <p class="brewery"><a href="/slug">Brewery Name</a></p>
-    //   <p class="style">IPA - American</p>
-    //   <div class="caps" data-rating="3.937">
-
-    const brewery =
-      chunk.match(/<p class="brewery"><a[^>]*>([^<]+)<\/a>/)?.[1]?.trim() ?? null;
-
-    const style =
-      chunk.match(/<p class="style">([^<]+)<\/p>/)?.[1]?.trim() ?? null;
-
+    const brewery   = chunk.match(/<p class="brewery"><a[^>]*>([^<]+)<\/a>/)?.[1]?.trim() ?? null;
+    const style     = chunk.match(/<p class="style">([^<]+)<\/p>/)?.[1]?.trim() ?? null;
     const ratingStr = chunk.match(/data-rating="(\d+\.\d+)"/)?.[1] ?? null;
-    const rating = ratingStr ? parseFloat(ratingStr) : null;
 
     results.push({
       name,
       brewery,
       style,
-      rating,
+      rating: ratingStr ? parseFloat(ratingStr) : null,
       url: `https://untappd.com${path}`,
     });
 

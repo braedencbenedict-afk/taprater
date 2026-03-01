@@ -1,5 +1,5 @@
-// TapRater Service Worker — 2026-03-01
-const CACHE = 'taprater-v8';
+// TapRater Service Worker — 2026-03-01-2
+const CACHE = 'taprater-v9';
 
 // Only cache truly static assets — NOT index.html.
 // index.html is always fetched fresh so code changes show up immediately.
