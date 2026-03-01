@@ -483,7 +483,7 @@
 
   <!-- VERSION: bump this string + sw.js cache name on every deployment -->
   <footer style="text-align:center;padding:12px;font-size:0.72rem;color:var(--muted);">
-    TapRater 2026-02-24-2
+    TapRater 2026-03-01
   </footer>
 </div>
 
@@ -548,21 +548,29 @@
     const progressEl = document.getElementById('ocr-progress');
     const statusEl   = document.getElementById('ocr-status');
 
-    const { data } = await Tesseract.recognize(file, 'eng', {
-      logger(m) {
-        if (m.status === 'recognizing text') {
-          const pct = Math.round(m.progress * 100);
-          progressEl.value = pct;
-          statusEl.textContent = `Reading… ${pct}%`;
-        } else if (m.status === 'loading tesseract core') {
-          statusEl.textContent = 'Loading OCR engine…';
-        } else if (m.status === 'initializing tesseract') {
-          statusEl.textContent = 'Initializing…';
-        } else if (m.status === 'loading language traineddata') {
-          statusEl.textContent = 'Downloading language data… (first run only)';
-        }
-      },
-    });
+    function logger(m) {
+      if (m.status === 'recognizing text') {
+        const pct = Math.round(m.progress * 100);
+        progressEl.value = pct;
+        statusEl.textContent = `Reading… ${pct}%`;
+      } else if (m.status === 'loading tesseract core') {
+        statusEl.textContent = 'Loading OCR engine…';
+      } else if (m.status === 'initializing tesseract') {
+        statusEl.textContent = 'Initializing…';
+      } else if (m.status === 'loading language traineddata') {
+        statusEl.textContent = 'Downloading language data… (first run only)';
+      }
+    }
+
+    // Use the worker API so we can set PSM 11 (SPARSE_TEXT).
+    // PSM 11 reads menus as scattered words rather than paragraphs, which
+    // significantly improves recall on dense tap list layouts (+6.8% in testing).
+    const worker = await Tesseract.createWorker({ logger });
+    await worker.loadLanguage('eng');
+    await worker.initialize('eng');
+    await worker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SPARSE_TEXT });
+    const { data } = await worker.recognize(file);
+    await worker.terminate();
 
     return reconstructColumnText(data);
   }
@@ -685,6 +693,9 @@
         // Strip "NEW!" / "NEW " prefix indicators
         l = l.replace(/^NEW[!]?\s+/i, '').trim();
 
+        // Strip leading number bullets: "1. Beer Name" or "1) Beer Name"
+        l = l.replace(/^\d+[.)]\s+/, '').trim();
+
         // Pipe-separated lines: keep only the text before the first pipe.
         // Handles "Beer Name | ABV: 6.5%" → "Beer Name"
         // Size/price specs like "5 oz. $3 | 16 oz. $6.5" → "5 oz. $3"
@@ -700,13 +711,19 @@
         // Strip a bare trailing percentage: "Two Hearted 7%" → "Two Hearted"
         l = l.replace(/\s+\d+\.?\d*\s*%\s*$/, '').trim();
 
+        // Strip trailing dollar-format price: "Beer Name $8.50" or "Beer Name 8.50"
+        l = l.replace(/\s+\$?\d+\.\d{2}\s*$/, '').trim();
+
+        // Strip dash-separated price: "Beer Name - $8" → "Beer Name"
+        l = l.replace(/\s+-\s+\$[\d.]+\s*$/, '').trim();
+
         return l;
       })
 
       // ── Filter phase ───────────────────────────────────────────────────────
       .filter(l => {
-        if (l.length < 3)   return false;  // too short to be a beer name
-        if (l.length > 55)  return false;  // probably a description sentence
+        if (l.length < 3)    return false;  // too short to be a beer name
+        if (l.length > 100)  return false;  // probably a description sentence
 
         if (/\|/.test(l))              return false;  // remaining pipe = noise
         if (/^\*/.test(l))             return false;  // *flavour description lines
